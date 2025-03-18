@@ -2,8 +2,12 @@ import sys
 import argparse
 import threading
 import tkinter as tk
+import logging
 from tkinter import ttk, filedialog, messagebox
 from app import YouTubeDownloader
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 def console_progress_callback(percentage):
@@ -11,16 +15,34 @@ def console_progress_callback(percentage):
     print(f"Download progress: {percentage:.2f}%", end="\r")
 
 
-def download_cli(url, resolution, output_path):
+def download_cli(url, resolution, output_path, retries=3, verbose=False):
     """Handle CLI download"""
+    # Set logging level based on verbosity
+    if verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Verbose mode enabled")
+
+    print(f"Downloading video: {url}")
+    print(f"Resolution: {resolution}")
+    print(f"Output directory: {output_path}")
+    print(f"Maximum retries: {retries}")
+
     downloader = YouTubeDownloader(output_path=output_path, progress_callback=console_progress_callback)
-    result, message = downloader.download_video(url, resolution)
+
+    print("Starting download...")
+    result, message = downloader.download_video(url, resolution, max_retries=retries)
 
     if result:
         print("\n" + message)
+        print(f"Video saved to: {result}")
         return 0
     else:
         print(f"\nError: {message}")
+        print("\nTroubleshooting tips:")
+        print("1. Check your internet connection")
+        print("2. Update pytube with: pip install --upgrade pytube")
+        print("3. Verify the YouTube URL is correct and the video is available")
+        print("4. Try a different resolution")
         return 1
 
 
@@ -118,17 +140,24 @@ class YouTubeDownloaderGUI:
             resolution = self.resolution_var.get()
             output_path = self.output_path_var.get()
 
+            self.status_var.set("Connecting to YouTube...")
+
             downloader = YouTubeDownloader(
                 output_path=output_path,
                 progress_callback=self.gui_progress_callback
             )
 
-            result, message = downloader.download_video(url, resolution)
+            # Show a more detailed status message
+            self.status_var.set("Fetching video information...")
+
+            # Use 3 retries by default for GUI mode
+            result, message = downloader.download_video(url, resolution, max_retries=3)
 
             # Update GUI from main thread
             self.root.after(0, self.download_completed, result, message)
 
         except Exception as e:
+            logging.error(f"Unhandled exception in download thread: {str(e)}")
             self.root.after(0, self.download_completed, None, f"Error: {str(e)}")
 
     def download_completed(self, result, message):
@@ -151,12 +180,16 @@ def main_cli():
                         help="Video resolution (highest, lowest, or specific like 720p)")
     parser.add_argument("--output", "-o", default="downloads",
                         help="Output directory for downloaded videos")
+    parser.add_argument("--retries", "-t", type=int, default=3,
+                        help="Maximum number of retry attempts")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Enable verbose output for debugging")
 
     # Parse arguments
     args = parser.parse_args()
 
     # Proceed with CLI download
-    return download_cli(args.url, args.resolution, args.output)
+    return download_cli(args.url, args.resolution, args.output, args.retries, args.verbose)
 
 
 def main():
