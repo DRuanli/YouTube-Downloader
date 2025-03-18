@@ -47,16 +47,24 @@ class YouTubeDownloader:
                 if retry_count > 0:
                     logger.info(f"Retry attempt {retry_count}/{max_retries}")
 
-                # Create a YouTube object
-                yt = YouTube(url)
+                # Create a YouTube object with custom callback to work around title issues
+                yt = YouTube(
+                    url,
+                    on_progress_callback=self._on_progress if self.progress_callback else None,
+                    use_oauth=False,
+                    allow_oauth_cache=False
+                )
 
-                # Register progress callback if provided
-                if self.progress_callback:
-                    yt.register_on_progress_callback(self._on_progress)
-
-                # Get video information
-                title = yt.title
-                logger.info(f"Processing video: {title}")
+                # Try to get title safely - this is a common failure point
+                try:
+                    title = yt.title
+                    logger.info(f"Processing video: {title}")
+                except Exception as title_error:
+                    logger.warning(f"Could not access video title: {str(title_error)}")
+                    # Use video ID as fallback title
+                    video_id = url.split("v=")[1].split("&")[0] if "v=" in url else "unknown"
+                    title = f"youtube_{video_id}"
+                    logger.info(f"Using fallback title: {title}")
 
                 # Get the appropriate stream
                 if resolution == "highest":
@@ -103,34 +111,62 @@ class YouTubeDownloader:
             except Exception as e:
                 logger.error(f"Error: {str(e)}")
 
-                # Check if it's an HTTP error
-                if "HTTP Error 400" in str(e) or "Bad Request" in str(e):
+                # Check for known pytube errors that we might be able to work around
+                error_str = str(e)
+                if any(x in error_str for x in ["HTTP Error 400", "Bad Request", "title", "Exception while accessing"]):
+                    # These are all potentially fixable with pattern updates and retries
+                    self._fix_regex_patterns()
+
                     retry_count += 1
                     if retry_count > max_retries:
-                        return None, "YouTube API rejected the request. Try updating pytube with: pip install --upgrade pytube"
+                        return None, "YouTube API rejected the request. Please try:\n1. pip install --upgrade pytube\n2. pip install git+https://github.com/pytube/pytube.git"
 
                     # Wait before retrying with exponential backoff
                     logger.info(f"Waiting {backoff_time} seconds before retrying...")
                     time.sleep(backoff_time)
                     backoff_time *= 2  # Exponential backoff
                 else:
-                    # For other errors, just return immediately
-                    return None, f"Error downloading video: {str(e)}"
+                    # Try to detect if this is a region restriction or age verification issue
+                    if "age" in error_str.lower() or "restrict" in error_str.lower() or "unavailable" in error_str.lower():
+                        return None, f"This video may be restricted or age-limited: {error_str}"
+                    else:
+                        # For other errors, retry once then give up
+                        retry_count += 1
+                        if retry_count > 1:  # Only retry once for unknown errors
+                            return None, f"Error downloading video: {error_str}"
+                        logger.info("Retrying once for unknown error...")
+                        time.sleep(1)
 
     def _fix_regex_patterns(self):
         """
         Attempt to fix common regex pattern issues in pytube.
-        This is a workaround for when YouTube changes their site structure.
+        This is a comprehensive fix for when YouTube changes their site structure.
         """
         try:
-            # Import the necessary module to modify
+            # Import necessary modules to modify
             from pytube import cipher
+            from pytube.innertube import InnerTube
 
-            # Update the regex pattern for js function name extraction
-            # (This pattern might need adjusting based on current YouTube structure)
-            cipher.get_initial_function_name_regex = re.compile(
-                r'(?P<function_name>[a-zA-Z$_]\w*)\s*=\s*function\(\w+\)')
-            cipher.get_transform_plan_regex = re.compile(r'(?P<transform_plan>\w+\..+?)\(')
+            # Update several common regex patterns that often break
+            cipher.get_initial_function_name_regex = re.compile(r'(?P<var>[a-zA-Z$_][a-zA-Z0-9$_]*)=function\(\w+\)')
+            cipher.get_transform_plan_regex = re.compile(r'(?P<transform_plan>[a-zA-Z$_][a-zA-Z0-9$_]*\..+?)\(')
+            cipher.get_transform_object_regex = re.compile(r'var (?P<transform_object>[a-zA-Z$_][a-zA-Z0-9$_]*)=\{')
+            cipher.get_transform_object_dict_regex = re.compile(r'(?P<object_dict>({.+?}))')
+
+            # Reset the client cache - sometimes helps with stale client issues
+            InnerTube._default_clients = {}
+
+            # Patch client/get calls for JS object retrieval
+            try:
+                from pytube.extract import get_ytplayer_config, find_object_from_startpoint
+                from pytube.parser import find_object_from_startpoint as parser_find
+
+                # Ensure these functions have the strongest regex patterns
+                get_ytplayer_config.__defaults__ = (r'window\.ytplayer\.config\s*=\s*', r'ytplayer\.config\s*=\s*',)
+
+                logger.info("Patched internal pytube functions")
+            except (ImportError, AttributeError) as e:
+                logger.warning(f"Could not patch all internal functions: {str(e)}")
 
             logger.info("Updated pytube regex patterns")
         except Exception as e:
