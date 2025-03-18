@@ -8,6 +8,7 @@ from app import YouTubeDownloader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def console_progress_callback(percentage):
@@ -157,7 +158,7 @@ class YouTubeDownloaderGUI:
             self.root.after(0, self.download_completed, result, message)
 
         except Exception as e:
-            logging.error(f"Unhandled exception in download thread: {str(e)}")
+            logger.error(f"Unhandled exception in download thread: {str(e)}")
             self.root.after(0, self.download_completed, None, f"Error: {str(e)}")
 
     def download_completed(self, result, message):
